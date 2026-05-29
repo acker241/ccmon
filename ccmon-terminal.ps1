@@ -1,4 +1,4 @@
-# ccmon-terminal — compact terminal monitor (% limits + ETA)
+# ccmon-terminal — compact terminal monitor (% limits + ETA, USD-based)
 # Alternative to overlay: runs in cmd/Windows Terminal, pin to taskbar.
 
 $ErrorActionPreference = 'SilentlyContinue'
@@ -12,13 +12,6 @@ try {
     $win.Width = 48; $win.Height = 13
     $host.UI.RawUI.WindowSize = $win
 } catch {}
-
-function Format-Tokens($n) {
-    if ($n -ge 1e9) { return ('{0:N2}B' -f ($n/1e9)) }
-    if ($n -ge 1e6) { return ('{0:N1}M' -f ($n/1e6)) }
-    if ($n -ge 1e3) { return ('{0:N1}k' -f ($n/1e3)) }
-    return "$n"
-}
 
 function Format-Duration($mins) {
     if ($mins -lt 0 -or [double]::IsInfinity($mins) -or [double]::IsNaN($mins)) { return '--' }
@@ -85,39 +78,42 @@ while ($true) {
         $dailyHist  = @($daily  | Where-Object { -not $today  -or $_.period -ne $today.period })
         $weeklyHist = @($weekly | Where-Object { -not $thisWk -or $_.period -ne $thisWk.period })
 
-        $sessLim = if ($env:CCMON_SESSION_LIMIT) { [long]$env:CCMON_SESSION_LIMIT }
-            elseif ($sessHist.Count -gt 0)   { ($sessHist   | Measure-Object -Property totalTokens -Maximum).Maximum }
-            elseif ($active)                 { [math]::Max(1, $active.totalTokens) } else { 1 }
-        $dailyLim = if ($env:CCMON_DAILY_LIMIT) { [long]$env:CCMON_DAILY_LIMIT }
-            elseif ($dailyHist.Count -gt 0)  { ($dailyHist  | Measure-Object -Property totalTokens -Maximum).Maximum }
-            elseif ($today)                  { [math]::Max(1, $today.totalTokens) } else { 1 }
-        $weeklyLim = if ($env:CCMON_WEEKLY_LIMIT) { [long]$env:CCMON_WEEKLY_LIMIT }
-            elseif ($weeklyHist.Count -gt 0) { ($weeklyHist | Measure-Object -Property totalTokens -Maximum).Maximum }
-            elseif ($thisWk)                 { [math]::Max(1, $thisWk.totalTokens) } else { 1 }
+        $sessLim = if ($env:CCMON_SESSION_LIMIT) { [double]$env:CCMON_SESSION_LIMIT }
+            elseif ($sessHist.Count -gt 0)   { [double]($sessHist   | Measure-Object -Property costUSD   -Maximum).Maximum }
+            elseif ($active)                 { [math]::Max(0.01, [double]$active.costUSD) } else { 0.01 }
+        $dailyLim = if ($env:CCMON_DAILY_LIMIT) { [double]$env:CCMON_DAILY_LIMIT }
+            elseif ($dailyHist.Count -gt 0)  { [double]($dailyHist  | Measure-Object -Property totalCost -Maximum).Maximum }
+            elseif ($today)                  { [math]::Max(0.01, [double]$today.totalCost) } else { 0.01 }
+        $weeklyLim = if ($env:CCMON_WEEKLY_LIMIT) { [double]$env:CCMON_WEEKLY_LIMIT }
+            elseif ($weeklyHist.Count -gt 0) { [double]($weeklyHist | Measure-Object -Property totalCost -Maximum).Maximum }
+            elseif ($thisWk)                 { [math]::Max(0.01, [double]$thisWk.totalCost) } else { 0.01 }
 
-        $sessUsed   = if ($active) { $active.totalTokens } else { 0 }
-        $dailyUsed  = if ($today)  { $today.totalTokens }  else { 0 }
-        $weeklyUsed = if ($thisWk) { $thisWk.totalTokens } else { 0 }
+        $sessCost   = if ($active) { [double]$active.costUSD } else { 0 }
+        $dailyCost  = if ($today)  { [double]$today.totalCost }  else { 0 }
+        $weeklyCost = if ($thisWk) { [double]$thisWk.totalCost } else { 0 }
         $resetLeft  = if ($active) { Format-Duration $active.projection.remainingMinutes } else { '--' }
 
-        $rateAvg = if ($active) { [double]$active.burnRate.tokensPerMinute } else { 0 }
+        $rateAvgPerMin = if ($active) { [double]$active.burnRate.costPerHour / 60 } else { 0 }
+        $costPerTok    = if ($active -and $active.totalTokens -gt 0) {
+                            [double]$active.costUSD / [double]$active.totalTokens
+                         } else { 0 }
         $tok30 = Get-WindowTokens 30
         $tok60 = Get-WindowTokens 60
-        $rate30 = $tok30 / 30
-        $rate60 = $tok60 / 60
+        $rate30 = if ($costPerTok -gt 0) { ($tok30 * $costPerTok) / 30 } else { 0 }
+        $rate60 = if ($costPerTok -gt 0) { ($tok60 * $costPerTok) / 60 } else { 0 }
 
-        $remTok = [math]::Max(0, $sessLim - $sessUsed)
-        $etaAvg = if ($rateAvg -gt 0) { $remTok / $rateAvg } else { -1 }
-        $eta30  = if ($rate30  -gt 0) { $remTok / $rate30  } else { -1 }
-        $eta60  = if ($rate60  -gt 0) { $remTok / $rate60  } else { -1 }
+        $remCost = [math]::Max(0, $sessLim - $sessCost)
+        $etaAvg = if ($rateAvgPerMin -gt 0) { $remCost / $rateAvgPerMin } else { -1 }
+        $eta30  = if ($rate30 -gt 0)        { $remCost / $rate30        } else { -1 }
+        $eta60  = if ($rate60 -gt 0)        { $remCost / $rate60        } else { -1 }
 
         Clear-Host
         Write-Host "ccmon  " -NoNewline -ForegroundColor DarkGray
         Write-Host (Get-Date).ToString('HH:mm:ss') -ForegroundColor DarkCyan
         Write-Host ""
-        Write-Bar 'session' $sessUsed   $sessLim
-        Write-Bar 'daily'   $dailyUsed  $dailyLim
-        Write-Bar 'weekly'  $weeklyUsed $weeklyLim
+        Write-Bar 'session' $sessCost   $sessLim
+        Write-Bar 'daily'   $dailyCost  $dailyLim
+        Write-Bar 'weekly'  $weeklyCost $weeklyLim
         Write-Host ""
         Write-Host "  reset   " -NoNewline -ForegroundColor DarkGray
         Write-Host $resetLeft -ForegroundColor Yellow

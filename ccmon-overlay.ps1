@@ -1,11 +1,41 @@
 # ccmon-overlay — desktop overlay (borderless, topmost, draggable)
 # Async fetch via RunSpace so UI never blocks.
+# Metric switchable via right-click: USD (cost) / Tokens / Percentage (auto-calibrated).
+# Auto-checks GitHub for updates on startup.
 # Repo: https://github.com/acker241/ccmon
 
 $ErrorActionPreference = 'SilentlyContinue'
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
 
-$posFile = "$env:USERPROFILE\.ccmon-pos.txt"
+$posFile    = "$env:USERPROFILE\.ccmon-pos.txt"
+$configFile = "$env:USERPROFILE\.ccmon-config.json"
+$repoOwner  = 'acker241'
+$repoName   = 'ccmon'
+$repoUrl    = "https://github.com/$repoOwner/$repoName"
+
+# ---------- config ----------
+
+$script:config = @{
+    metric      = 'pct'   # 'usd' | 'tokens' | 'pct'
+    lastSeenSha = $null
+}
+
+function Load-Config {
+    if (Test-Path $configFile) {
+        try {
+            $j = Get-Content $configFile -Raw | ConvertFrom-Json
+            if ($j.metric)      { $script:config.metric      = [string]$j.metric }
+            if ($j.lastSeenSha) { $script:config.lastSeenSha = [string]$j.lastSeenSha }
+        } catch {}
+    }
+}
+function Save-Config {
+    try {
+        $script:config | ConvertTo-Json | Set-Content $configFile -Encoding UTF8
+    } catch {}
+}
+
+Load-Config
 
 # ---------- XAML ----------
 
@@ -61,17 +91,50 @@ $wBar = $window.FindName('wBar'); $wPct = $window.FindName('wPct')
 $tReset = $window.FindName('tReset')
 $tEta = $window.FindName('tEta')
 
+# ---------- context menu ----------
+
+$miMetricUsd = New-Object System.Windows.Controls.MenuItem
+$miMetricUsd.Header = 'USD (cost)';        $miMetricUsd.IsCheckable = $true
+$miMetricTok = New-Object System.Windows.Controls.MenuItem
+$miMetricTok.Header = 'Tokens (raw)';      $miMetricTok.IsCheckable = $true
+$miMetricPct = New-Object System.Windows.Controls.MenuItem
+$miMetricPct.Header = 'Percentage (auto)'; $miMetricPct.IsCheckable = $true
+
+$miMetric = New-Object System.Windows.Controls.MenuItem
+$miMetric.Header = 'Metric'
+[void]$miMetric.Items.Add($miMetricUsd)
+[void]$miMetric.Items.Add($miMetricTok)
+[void]$miMetric.Items.Add($miMetricPct)
+
+$miUpdate = New-Object System.Windows.Controls.MenuItem
+$miUpdate.Header = 'Check for updates'
+
+$miOpenRepo = New-Object System.Windows.Controls.MenuItem
+$miOpenRepo.Header = 'Open GitHub repo'
+
+$miClose = New-Object System.Windows.Controls.MenuItem
+$miClose.Header = 'Close'
+
+$menu = New-Object System.Windows.Controls.ContextMenu
+[void]$menu.Items.Add($miMetric)
+[void]$menu.Items.Add((New-Object System.Windows.Controls.Separator))
+[void]$menu.Items.Add($miUpdate)
+[void]$menu.Items.Add($miOpenRepo)
+[void]$menu.Items.Add((New-Object System.Windows.Controls.Separator))
+[void]$menu.Items.Add($miClose)
+$window.ContextMenu = $menu
+
+function Sync-MetricChecks {
+    $miMetricUsd.IsChecked = ($script:config.metric -eq 'usd')
+    $miMetricTok.IsChecked = ($script:config.metric -eq 'tokens')
+    $miMetricPct.IsChecked = ($script:config.metric -eq 'pct')
+}
+Sync-MetricChecks
+
 # ---------- window behavior ----------
 
 $window.Add_MouseLeftButtonDown({ try { $window.DragMove() } catch {} })
 $window.Add_KeyDown({ if ($_.Key -eq 'Escape') { $window.Close() } })
-
-$menu = New-Object System.Windows.Controls.ContextMenu
-$miClose = New-Object System.Windows.Controls.MenuItem
-$miClose.Header = 'Close'
-$miClose.Add_Click({ $window.Close() })
-$menu.Items.Add($miClose) | Out-Null
-$window.ContextMenu = $menu
 
 if (Test-Path $posFile) {
     try {
@@ -90,17 +153,11 @@ $window.Add_Closing({
     } catch {}
 })
 
-# ---------- async fetch worker ----------
+# ---------- worker: fetch usage data ----------
 
 $workerScript = {
-    param($userprofile, $sessLimEnv, $dailyLimEnv, $weeklyLimEnv)
+    param($userprofile, $metric, $sessLimEnv, $dailyLimEnv, $weeklyLimEnv)
 
-    function Format-Tokens($n) {
-        if ($n -ge 1e9) { return ('{0:N2}B' -f ($n/1e9)) }
-        if ($n -ge 1e6) { return ('{0:N1}M' -f ($n/1e6)) }
-        if ($n -ge 1e3) { return ('{0:N1}k' -f ($n/1e3)) }
-        return "$n"
-    }
     function Format-Duration($mins) {
         if ($mins -lt 0 -or [double]::IsInfinity($mins) -or [double]::IsNaN($mins)) { return '--' }
         $h = [math]::Floor($mins / 60); $m = [math]::Floor($mins % 60)
@@ -146,39 +203,59 @@ $workerScript = {
     $today  = $daily  | Sort-Object period | Select-Object -Last 1
     $thisWk = $weekly | Sort-Object period | Select-Object -Last 1
 
-    # Defaults: max of previous periods (excludes current). Current breaking record => >100%.
+    # Property pick based on metric.
+    $sessProp = if ($metric -eq 'tokens') { 'totalTokens' } else { 'costUSD' }
+    $dayProp  = if ($metric -eq 'tokens') { 'totalTokens' } else { 'totalCost' }
+    $wkProp   = if ($metric -eq 'tokens') { 'totalTokens' } else { 'totalCost' }
+
     $sessHist   = @($blocks | Where-Object { -not $_.isActive -and -not $_.isGap })
     $dailyHist  = @($daily  | Where-Object { -not $today  -or $_.period -ne $today.period })
     $weeklyHist = @($weekly | Where-Object { -not $thisWk -or $_.period -ne $thisWk.period })
 
-    $sessLim = if ($sessLimEnv) { [long]$sessLimEnv }
-        elseif ($sessHist.Count -gt 0)   { ($sessHist   | Measure-Object -Property totalTokens -Maximum).Maximum }
-        elseif ($active)                 { [math]::Max(1, $active.totalTokens) } else { 1 }
-    $dailyLim = if ($dailyLimEnv) { [long]$dailyLimEnv }
-        elseif ($dailyHist.Count -gt 0)  { ($dailyHist  | Measure-Object -Property totalTokens -Maximum).Maximum }
-        elseif ($today)                  { [math]::Max(1, $today.totalTokens) } else { 1 }
-    $weeklyLim = if ($weeklyLimEnv) { [long]$weeklyLimEnv }
-        elseif ($weeklyHist.Count -gt 0) { ($weeklyHist | Measure-Object -Property totalTokens -Maximum).Maximum }
-        elseif ($thisWk)                 { [math]::Max(1, $thisWk.totalTokens) } else { 1 }
+    # 'pct' mode ignores env vars and forces auto-calibration (previous personal max).
+    $useEnv = ($metric -ne 'pct')
 
-    $sessUsed   = if ($active) { $active.totalTokens } else { 0 }
-    $dailyUsed  = if ($today)  { $today.totalTokens }  else { 0 }
-    $weeklyUsed = if ($thisWk) { $thisWk.totalTokens } else { 0 }
+    $sessLim = if ($useEnv -and $sessLimEnv) { [double]$sessLimEnv }
+        elseif ($sessHist.Count -gt 0)   { [double]($sessHist   | Measure-Object -Property $sessProp -Maximum).Maximum }
+        elseif ($active)                 { [math]::Max(0.01, [double]$active.$sessProp) } else { 0.01 }
+    $dailyLim = if ($useEnv -and $dailyLimEnv) { [double]$dailyLimEnv }
+        elseif ($dailyHist.Count -gt 0)  { [double]($dailyHist  | Measure-Object -Property $dayProp -Maximum).Maximum }
+        elseif ($today)                  { [math]::Max(0.01, [double]$today.$dayProp) } else { 0.01 }
+    $weeklyLim = if ($useEnv -and $weeklyLimEnv) { [double]$weeklyLimEnv }
+        elseif ($weeklyHist.Count -gt 0) { [double]($weeklyHist | Measure-Object -Property $wkProp -Maximum).Maximum }
+        elseif ($thisWk)                 { [math]::Max(0.01, [double]$thisWk.$wkProp) } else { 0.01 }
 
-    $sessPct   = if ($sessLim   -gt 0) { [math]::Min(999, [math]::Round(100 * $sessUsed   / $sessLim))   } else { 0 }
-    $dailyPct  = if ($dailyLim  -gt 0) { [math]::Min(999, [math]::Round(100 * $dailyUsed  / $dailyLim))  } else { 0 }
-    $weeklyPct = if ($weeklyLim -gt 0) { [math]::Min(999, [math]::Round(100 * $weeklyUsed / $weeklyLim)) } else { 0 }
+    $sessCur = if ($active) { [double]$active.$sessProp } else { 0 }
+    $dayCur  = if ($today)  { [double]$today.$dayProp }  else { 0 }
+    $wkCur   = if ($thisWk) { [double]$thisWk.$wkProp }  else { 0 }
 
-    $rateAvg = if ($active) { [double]$active.burnRate.tokensPerMinute } else { 0 }
+    $sessPct   = if ($sessLim   -gt 0) { [math]::Min(999, [math]::Round(100 * $sessCur / $sessLim))   } else { 0 }
+    $dailyPct  = if ($dailyLim  -gt 0) { [math]::Min(999, [math]::Round(100 * $dayCur  / $dailyLim))  } else { 0 }
+    $weeklyPct = if ($weeklyLim -gt 0) { [math]::Min(999, [math]::Round(100 * $wkCur   / $weeklyLim)) } else { 0 }
+
+    # ETA: rate in active metric per minute.
+    $costPerTok = if ($active -and $active.totalTokens -gt 0) {
+                    [double]$active.costUSD / [double]$active.totalTokens
+                  } else { 0 }
+    $rateAvgPerMin = if ($active) {
+        if ($metric -eq 'tokens') { [double]$active.burnRate.tokensPerMinute }
+        else                      { [double]$active.burnRate.costPerHour / 60 }
+    } else { 0 }
+
     $tok30 = Get-WindowTokens 30
     $tok60 = Get-WindowTokens 60
-    $rate30 = $tok30 / 30
-    $rate60 = $tok60 / 60
+    if ($metric -eq 'tokens') {
+        $rate30 = $tok30 / 30
+        $rate60 = $tok60 / 60
+    } else {
+        $rate30 = if ($costPerTok -gt 0) { ($tok30 * $costPerTok) / 30 } else { 0 }
+        $rate60 = if ($costPerTok -gt 0) { ($tok60 * $costPerTok) / 60 } else { 0 }
+    }
 
-    $remTok = [math]::Max(0, $sessLim - $sessUsed)
-    $etaAvg = if ($rateAvg -gt 0) { $remTok / $rateAvg } else { -1 }
-    $eta30  = if ($rate30  -gt 0) { $remTok / $rate30  } else { -1 }
-    $eta60  = if ($rate60  -gt 0) { $remTok / $rate60  } else { -1 }
+    $remVal = [math]::Max(0, $sessLim - $sessCur)
+    $etaAvg = if ($rateAvgPerMin -gt 0) { $remVal / $rateAvgPerMin } else { -1 }
+    $eta30  = if ($rate30 -gt 0)        { $remVal / $rate30        } else { -1 }
+    $eta60  = if ($rate60 -gt 0)        { $remVal / $rate60        } else { -1 }
 
     $resetLeft = if ($active) { Format-Duration $active.projection.remainingMinutes } else { '--' }
 
@@ -189,13 +266,28 @@ $workerScript = {
         weeklyPct = $weeklyPct
         reset     = "reset  $resetLeft"
         eta       = ("ETA  avg {0}  30m {1}  1h {2}" -f (Format-Duration $etaAvg), (Format-Duration $eta30), (Format-Duration $eta60))
+        metric    = $metric
     }
 }
 
-# ---------- async dispatcher ----------
+# ---------- worker: update check ----------
 
-$script:fetchPS = $null
-$script:fetchHandle = $null
+$updateScript = {
+    param($owner, $repo)
+    try {
+        $resp = Invoke-RestMethod -Uri "https://api.github.com/repos/$owner/$repo/commits/master" `
+                -Headers @{ 'User-Agent' = 'ccmon' } -TimeoutSec 5
+        return @{ sha = [string]$resp.sha }
+    } catch {
+        return @{ sha = $null; error = "$_" }
+    }
+}
+
+# ---------- dispatcher state ----------
+
+$script:fetchPS = $null;   $script:fetchHandle = $null
+$script:updatePS = $null;  $script:updateHandle = $null
+$script:updateAvailable = $false
 
 function Get-BarString($pct) {
     $w = 12
@@ -209,11 +301,22 @@ function Get-PctColor($pct) {
     return '#6BCB77'
 }
 
+function Get-StatusText {
+    $base = 'ccmon'
+    if ($script:updateAvailable) { return "$base ↑" }
+    return $base
+}
+function Get-StatusColor {
+    if ($script:updateAvailable) { return '#FFD93D' }
+    return '#666'
+}
+
 function Start-AsyncFetch {
     if ($script:fetchPS) { return }
     $script:fetchPS = [PowerShell]::Create()
     $null = $script:fetchPS.AddScript($workerScript).
         AddArgument($env:USERPROFILE).
+        AddArgument($script:config.metric).
         AddArgument($env:CCMON_SESSION_LIMIT).
         AddArgument($env:CCMON_DAILY_LIMIT).
         AddArgument($env:CCMON_WEEKLY_LIMIT)
@@ -222,9 +325,17 @@ function Start-AsyncFetch {
     $tStatus.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFrom('#666')
 }
 
+function Start-UpdateCheck {
+    if ($script:updatePS) { return }
+    $script:updatePS = [PowerShell]::Create()
+    $null = $script:updatePS.AddScript($updateScript).AddArgument($repoOwner).AddArgument($repoName)
+    $script:updateHandle = $script:updatePS.BeginInvoke()
+}
+
 function Apply-Result($r) {
     $tClock.Text = $r.clock
-    $tStatus.Text = 'ccmon'
+    $tStatus.Text = (Get-StatusText)
+    $tStatus.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFrom((Get-StatusColor))
 
     $sBar.Text = Get-BarString $r.sessPct
     $sBar.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFrom((Get-PctColor $r.sessPct))
@@ -241,6 +352,28 @@ function Apply-Result($r) {
     $tReset.Text = $r.reset
     $tEta.Text   = $r.eta
 }
+
+# ---------- menu handlers ----------
+
+function Set-Metric($m) {
+    $script:config.metric = $m
+    Save-Config
+    Sync-MetricChecks
+    Start-AsyncFetch
+}
+$miMetricUsd.Add_Click({ Set-Metric 'usd' })
+$miMetricTok.Add_Click({ Set-Metric 'tokens' })
+$miMetricPct.Add_Click({ Set-Metric 'pct' })
+
+$miUpdate.Add_Click({
+    $script:updateAvailable = $false
+    $tStatus.Text = 'check...'
+    Start-UpdateCheck
+})
+$miOpenRepo.Add_Click({ Start-Process $repoUrl })
+$miClose.Add_Click({ $window.Close() })
+
+# ---------- timers ----------
 
 $pollTimer = New-Object System.Windows.Threading.DispatcherTimer
 $pollTimer.Interval = [TimeSpan]::FromMilliseconds(200)
@@ -261,6 +394,26 @@ $pollTimer.Add_Tick({
             $script:fetchHandle = $null
         }
     }
+    if ($script:updateHandle -and $script:updateHandle.IsCompleted) {
+        try {
+            $out = $script:updatePS.EndInvoke($script:updateHandle)
+            if ($out -and $out.Count -gt 0) {
+                $r = $out[0]
+                if ($r -is [hashtable] -and $r.sha) {
+                    $prev = $script:config.lastSeenSha
+                    $script:config.lastSeenSha = $r.sha
+                    Save-Config
+                    $script:updateAvailable = ($prev -and $prev -ne $r.sha)
+                    $tStatus.Text = (Get-StatusText)
+                    $tStatus.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFrom((Get-StatusColor))
+                }
+            }
+        } catch {} finally {
+            $script:updatePS.Dispose()
+            $script:updatePS = $null
+            $script:updateHandle = $null
+        }
+    }
 })
 $pollTimer.Start()
 
@@ -269,6 +422,9 @@ $refreshTimer.Interval = [TimeSpan]::FromSeconds(30)
 $refreshTimer.Add_Tick({ Start-AsyncFetch })
 $refreshTimer.Start()
 
-$window.Add_Loaded({ Start-AsyncFetch })
+$window.Add_Loaded({
+    Start-AsyncFetch
+    Start-UpdateCheck
+})
 
 [void]$window.ShowDialog()

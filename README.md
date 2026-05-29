@@ -78,8 +78,20 @@ Double-click `Desktop\ccmon-overlay.lnk`. First launch downloads `ccusage` (~10s
 | Interaction | Effect |
 |---|---|
 | Left-click + drag | Move window |
-| Right-click | Context menu (Close) |
+| Right-click | Context menu — switch metric, check for updates, close |
 | <kbd>Esc</kbd> | Close |
+
+### Context menu
+
+- **Metric**
+  - **USD (cost)** — bars/limits in dollars (Anthropic dashboard alignment)
+  - **Tokens (raw)** — bars/limits in token sums
+  - **Percentage (auto)** — auto-calibrated against personal max, ignores env vars *(default)*
+- **Check for updates** — pings GitHub for new commits; status shows `↑` if available
+- **Open GitHub repo**
+- **Close**
+
+Preferences saved to `~\.ccmon-config.json`.
 
 Terminal mode (alternative, pin to taskbar):
 
@@ -89,12 +101,12 @@ powershell -File "$env:LOCALAPPDATA\ccmon\ccmon-terminal.ps1"
 
 ## Configure plan limits
 
-By default ccmon calibrates bars against your **previous personal max** (this week excluded — so 100% genuinely means "you've broken your record"). To show real % against your Anthropic plan caps instead, set these env vars (values in tokens):
+ccmon measures usage in **USD cost** (mirrors Anthropic's dashboard weighting — cache reads, output multipliers, etc. all priced in). By default bars calibrate against your **previous personal max** in USD (current period excluded — so 100% genuinely means "you've broken your record"). To show real % against your Anthropic plan caps instead, set these env vars (values in USD, e.g. `108.59`):
 
 ```powershell
-[Environment]::SetEnvironmentVariable('CCMON_SESSION_LIMIT', '92000000',    'User')
-[Environment]::SetEnvironmentVariable('CCMON_DAILY_LIMIT',   '1500000000',  'User')
-[Environment]::SetEnvironmentVariable('CCMON_WEEKLY_LIMIT',  '10600000000', 'User')
+[Environment]::SetEnvironmentVariable('CCMON_SESSION_LIMIT', '109',  'User')
+[Environment]::SetEnvironmentVariable('CCMON_DAILY_LIMIT',   '840',  'User')
+[Environment]::SetEnvironmentVariable('CCMON_WEEKLY_LIMIT',  '5880', 'User')
 ```
 
 Restart the overlay after setting.
@@ -107,20 +119,20 @@ The included `calibrate.ps1` does it for you. Open https://claude.ai/settings/us
 powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\ccmon\calibrate.ps1"
 ```
 
-It fetches your current token totals via ccusage, prompts for the % the dashboard shows, computes `limit = tokens / pct` for each bar, and writes the env vars. Recalibrate monthly — the ratio drifts as your cache-read share changes.
+It fetches your current USD cost via ccusage, prompts for the % the dashboard shows, computes `limit_usd = cost_usd / pct` for each bar, and writes the env vars. With USD-based metric drift is minimal — calibrating once usually lasts months.
 
 ### Manual derivation
 
 ```
-limit_tokens = current_tokens_used / dashboard_pct
+limit_usd = current_cost_usd / dashboard_pct
 ```
 
-Where `current_tokens_used` comes from:
+Where `current_cost_usd` comes from:
 
 ```powershell
-npx ccusage blocks --active --json   # session
-npx ccusage daily --json             # daily (not on dashboard — estimate weekly/7)
-npx ccusage weekly --json            # weekly
+npx ccusage blocks --active --json   # session (costUSD)
+npx ccusage daily --json             # daily (totalCost — not on dashboard, estimate weekly/7)
+npx ccusage weekly --json            # weekly (totalCost)
 ```
 
 ## Uninstall
@@ -142,8 +154,8 @@ Removes installed files, shortcuts, and saved overlay position.
 ## Notes
 
 - **Weekly may exceed 100%** when your current week is a new personal record. Set `CCMON_WEEKLY_LIMIT` to fix the ceiling to your actual plan cap.
-- **Cache reads are counted as raw tokens.** Anthropic's dashboard weights them differently (≈ 0.1×), so absolute % won't match unless you derive the env var from the dashboard ratio.
-- Fetch cost ≈ 6–8 s per refresh (3 ccusage calls + JSONL scan). Runs in background — overlay stays smooth.
+- **Bars are USD-based** — same currency as Anthropic's pricing, so the dashboard's % and ccmon's % stay in sync regardless of how your cache-read / output mix changes.
+- Fetch cost ≈ 6–8 s per refresh (3 ccusage calls + JSONL scan). Runs in background — overlay stays smooth. **Zero Claude API tokens consumed** — ccusage only reads local files.
 
 ## License
 
