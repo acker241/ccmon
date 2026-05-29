@@ -99,9 +99,17 @@ By default ccmon calibrates bars against your **previous personal max** (this we
 
 Restart the overlay after setting.
 
-### Deriving your token limits
+### Auto-calibrate
 
-Open https://claude.ai/settings/usage and read the percentage shown for session / weekly. Then:
+The included `calibrate.ps1` does it for you. Open https://claude.ai/settings/usage in your browser, then:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\ccmon\calibrate.ps1"
+```
+
+It fetches your current token totals via ccusage, prompts for the % the dashboard shows, computes `limit = tokens / pct` for each bar, and writes the env vars. Recalibrate monthly — the ratio drifts as your cache-read share changes.
+
+### Manual derivation
 
 ```
 limit_tokens = current_tokens_used / dashboard_pct
@@ -114,8 +122,6 @@ npx ccusage blocks --active --json   # session
 npx ccusage daily --json             # daily (not on dashboard — estimate weekly/7)
 npx ccusage weekly --json            # weekly
 ```
-
-Recalibrate monthly — the ratio drifts as your cache-read share changes.
 
 ## Uninstall
 

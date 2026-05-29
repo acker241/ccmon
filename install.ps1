@@ -19,7 +19,7 @@ Write-Host "node $(node --version) OK" -ForegroundColor Green
 # 2. Copy files
 $src = $PSScriptRoot
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-$files = @('ccmon-overlay.ps1', 'ccmon-terminal.ps1', 'ccmon-overlay.vbs', 'uninstall.ps1')
+$files = @('ccmon-overlay.ps1', 'ccmon-terminal.ps1', 'ccmon-overlay.vbs', 'uninstall.ps1', 'calibrate.ps1')
 foreach ($f in $files) {
     $srcPath = Join-Path $src $f
     if (Test-Path $srcPath) {
