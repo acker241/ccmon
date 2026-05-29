@@ -84,9 +84,9 @@ Double-click `Desktop\ccmon-overlay.lnk`. First launch downloads `ccusage` (~10s
 ### Context menu
 
 - **Metric**
-  - **USD (cost)** — bars/limits in dollars (Anthropic dashboard alignment)
+  - **USD (cost)** — bars/limits in dollars; matches Anthropic dashboard *(default)*
   - **Tokens (raw)** — bars/limits in token sums
-  - **Percentage (auto)** — auto-calibrated against personal max, ignores env vars *(default)*
+  - **Percentage (auto)** — auto-calibrated against personal max, ignores env vars
 - **Check for updates** — pings GitHub for new commits; status shows `↑` if available
 - **Open GitHub repo**
 - **Close**

@@ -16,7 +16,7 @@ $repoUrl    = "https://github.com/$repoOwner/$repoName"
 # ---------- config ----------
 
 $script:config = @{
-    metric      = 'pct'   # 'usd' | 'tokens' | 'pct'
+    metric      = 'usd'   # 'usd' | 'tokens' | 'pct'
     lastSeenSha = $null
 }
 
