@@ -30,9 +30,10 @@ function Format-Duration($mins) {
 }
 
 function Write-Bar($label, $used, $limit) {
-    $pct = if ($limit -gt 0) { [math]::Min(100, [math]::Round(100 * $used / $limit)) } else { 0 }
+    $pct = if ($limit -gt 0) { [math]::Min(999, [math]::Round(100 * $used / $limit)) } else { 0 }
     $w = 12
-    $filled = [math]::Floor($w * $pct / 100)
+    $clamped = [math]::Min(100, [math]::Max(0, $pct))
+    $filled = [math]::Floor($w * $clamped / 100)
     $bar = ('#' * $filled) + ('.' * ($w - $filled))
     $color = if ($pct -ge 80) { 'Red' } elseif ($pct -ge 50) { 'Yellow' } else { 'Green' }
     Write-Host ("  {0,-7} " -f $label) -NoNewline -ForegroundColor DarkGray
@@ -80,15 +81,19 @@ while ($true) {
         $today  = $daily  | Sort-Object period | Select-Object -Last 1
         $thisWk = $weekly | Sort-Object period | Select-Object -Last 1
 
-        $sessLim = if ($env:CCMON_SESSION_LIMIT) { [long]$env:CCMON_SESSION_LIMIT } else {
-            ($blocks | Where-Object { -not $_.isGap } | Measure-Object -Property totalTokens -Maximum).Maximum
-        }
-        $dailyLim = if ($env:CCMON_DAILY_LIMIT) { [long]$env:CCMON_DAILY_LIMIT } else {
-            ($daily | Measure-Object -Property totalTokens -Maximum).Maximum
-        }
-        $weeklyLim = if ($env:CCMON_WEEKLY_LIMIT) { [long]$env:CCMON_WEEKLY_LIMIT } else {
-            ($weekly | Measure-Object -Property totalTokens -Maximum).Maximum
-        }
+        $sessHist   = @($blocks | Where-Object { -not $_.isActive -and -not $_.isGap })
+        $dailyHist  = @($daily  | Where-Object { -not $today  -or $_.period -ne $today.period })
+        $weeklyHist = @($weekly | Where-Object { -not $thisWk -or $_.period -ne $thisWk.period })
+
+        $sessLim = if ($env:CCMON_SESSION_LIMIT) { [long]$env:CCMON_SESSION_LIMIT }
+            elseif ($sessHist.Count -gt 0)   { ($sessHist   | Measure-Object -Property totalTokens -Maximum).Maximum }
+            elseif ($active)                 { [math]::Max(1, $active.totalTokens) } else { 1 }
+        $dailyLim = if ($env:CCMON_DAILY_LIMIT) { [long]$env:CCMON_DAILY_LIMIT }
+            elseif ($dailyHist.Count -gt 0)  { ($dailyHist  | Measure-Object -Property totalTokens -Maximum).Maximum }
+            elseif ($today)                  { [math]::Max(1, $today.totalTokens) } else { 1 }
+        $weeklyLim = if ($env:CCMON_WEEKLY_LIMIT) { [long]$env:CCMON_WEEKLY_LIMIT }
+            elseif ($weeklyHist.Count -gt 0) { ($weeklyHist | Measure-Object -Property totalTokens -Maximum).Maximum }
+            elseif ($thisWk)                 { [math]::Max(1, $thisWk.totalTokens) } else { 1 }
 
         $sessUsed   = if ($active) { $active.totalTokens } else { 0 }
         $dailyUsed  = if ($today)  { $today.totalTokens }  else { 0 }

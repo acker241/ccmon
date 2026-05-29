@@ -146,23 +146,28 @@ $workerScript = {
     $today  = $daily  | Sort-Object period | Select-Object -Last 1
     $thisWk = $weekly | Sort-Object period | Select-Object -Last 1
 
-    $sessLim = if ($sessLimEnv) { [long]$sessLimEnv } else {
-        ($blocks | Where-Object { -not $_.isGap } | Measure-Object -Property totalTokens -Maximum).Maximum
-    }
-    $dailyLim = if ($dailyLimEnv) { [long]$dailyLimEnv } else {
-        ($daily | Measure-Object -Property totalTokens -Maximum).Maximum
-    }
-    $weeklyLim = if ($weeklyLimEnv) { [long]$weeklyLimEnv } else {
-        ($weekly | Measure-Object -Property totalTokens -Maximum).Maximum
-    }
+    # Defaults: max of previous periods (excludes current). Current breaking record => >100%.
+    $sessHist   = @($blocks | Where-Object { -not $_.isActive -and -not $_.isGap })
+    $dailyHist  = @($daily  | Where-Object { -not $today  -or $_.period -ne $today.period })
+    $weeklyHist = @($weekly | Where-Object { -not $thisWk -or $_.period -ne $thisWk.period })
+
+    $sessLim = if ($sessLimEnv) { [long]$sessLimEnv }
+        elseif ($sessHist.Count -gt 0)   { ($sessHist   | Measure-Object -Property totalTokens -Maximum).Maximum }
+        elseif ($active)                 { [math]::Max(1, $active.totalTokens) } else { 1 }
+    $dailyLim = if ($dailyLimEnv) { [long]$dailyLimEnv }
+        elseif ($dailyHist.Count -gt 0)  { ($dailyHist  | Measure-Object -Property totalTokens -Maximum).Maximum }
+        elseif ($today)                  { [math]::Max(1, $today.totalTokens) } else { 1 }
+    $weeklyLim = if ($weeklyLimEnv) { [long]$weeklyLimEnv }
+        elseif ($weeklyHist.Count -gt 0) { ($weeklyHist | Measure-Object -Property totalTokens -Maximum).Maximum }
+        elseif ($thisWk)                 { [math]::Max(1, $thisWk.totalTokens) } else { 1 }
 
     $sessUsed   = if ($active) { $active.totalTokens } else { 0 }
     $dailyUsed  = if ($today)  { $today.totalTokens }  else { 0 }
     $weeklyUsed = if ($thisWk) { $thisWk.totalTokens } else { 0 }
 
-    $sessPct   = if ($sessLim   -gt 0) { [math]::Min(100, [math]::Round(100 * $sessUsed   / $sessLim))   } else { 0 }
-    $dailyPct  = if ($dailyLim  -gt 0) { [math]::Min(100, [math]::Round(100 * $dailyUsed  / $dailyLim))  } else { 0 }
-    $weeklyPct = if ($weeklyLim -gt 0) { [math]::Min(100, [math]::Round(100 * $weeklyUsed / $weeklyLim)) } else { 0 }
+    $sessPct   = if ($sessLim   -gt 0) { [math]::Min(999, [math]::Round(100 * $sessUsed   / $sessLim))   } else { 0 }
+    $dailyPct  = if ($dailyLim  -gt 0) { [math]::Min(999, [math]::Round(100 * $dailyUsed  / $dailyLim))  } else { 0 }
+    $weeklyPct = if ($weeklyLim -gt 0) { [math]::Min(999, [math]::Round(100 * $weeklyUsed / $weeklyLim)) } else { 0 }
 
     $rateAvg = if ($active) { [double]$active.burnRate.tokensPerMinute } else { 0 }
     $tok30 = Get-WindowTokens 30
@@ -194,7 +199,8 @@ $script:fetchHandle = $null
 
 function Get-BarString($pct) {
     $w = 12
-    $filled = [math]::Floor($w * $pct / 100)
+    $clamped = [math]::Min(100, [math]::Max(0, $pct))
+    $filled = [math]::Floor($w * $clamped / 100)
     return (('#' * $filled) + ('.' * ($w - $filled)))
 }
 function Get-PctColor($pct) {
