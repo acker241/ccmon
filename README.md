@@ -32,7 +32,7 @@ Shows session / daily / weekly usage as % bars, plus ETA to exhaust the current 
 ## Install
 
 ```powershell
-git clone https://github.com/<your-user>/ccmon.git
+git clone https://github.com/acker241/ccmon.git
 cd ccmon
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```

@@ -1,6 +1,6 @@
 # ccmon-overlay — desktop overlay (borderless, topmost, draggable)
 # Async fetch via RunSpace so UI never blocks.
-# Repo: https://github.com/<your-user>/ccmon
+# Repo: https://github.com/acker241/ccmon
 
 $ErrorActionPreference = 'SilentlyContinue'
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
