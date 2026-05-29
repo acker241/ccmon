@@ -1,0 +1,11 @@
+# local state
+.ccmon-pos.txt
+
+# editor/OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# logs
+*.log
